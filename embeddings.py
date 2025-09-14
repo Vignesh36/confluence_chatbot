@@ -4,67 +4,78 @@ import os
 from sentence_transformers import SentenceTransformer
 
 # Configuration
-INPUT_METADATA_FILE = "metadata.json"
-OUTPUT_CHUNKS_FILE = "document_chunks.json"
+BASE_DIR = "./scraped_data"
 MAX_WORDS_PER_CHUNK = 300
+EMBEDDING_MODEL_NAME = 'all-MiniLM-L6-v2'
 
-# Load metadata
-with open(INPUT_METADATA_FILE, "r", encoding="utf-8") as f:
-    metadata = json.load(f)
+# Initialize embedding model
+print("Loading embedding model...")
+model = SentenceTransformer(EMBEDDING_MODEL_NAME)
 
-text = metadata['text_content']
-images = metadata['images']
+# Iterate over all folders in scraped_data
+for folder_name in os.listdir(BASE_DIR):
+    folder_path = os.path.join(BASE_DIR, folder_name)
+    metadata_file = os.path.join(folder_path, "metadata.json")
 
-# Step 1 – Chunk the text by paragraphs and word count
-paragraphs = [p.strip() for p in re.split(r'\n\s*\n', text) if len(p.strip()) > 0]
+    if not os.path.isfile(metadata_file):
+        print(f"Skipping {folder_name}: metadata.json not found.")
+        continue
 
-chunks = []
-current_chunk = ""
-word_count = 0
+    print(f"Processing {folder_name}")
 
-for para in paragraphs:
-    words = para.split()
-    if word_count + len(words) <= MAX_WORDS_PER_CHUNK:
-        current_chunk += para + "\n\n"
-        word_count += len(words)
-    else:
+    # Load metadata
+    with open(metadata_file, "r", encoding="utf-8") as f:
+        metadata = json.load(f)
+
+    text = metadata.get('text_content', '')
+    images = metadata.get('images', [])
+    url = metadata.get('url', 'N/A')
+
+    # Chunk the text
+    paragraphs = [p.strip() for p in re.split(r'\n\s*\n', text) if len(p.strip()) > 0]
+
+    chunks = []
+    current_chunk = ""
+    word_count = 0
+
+    for para in paragraphs:
+        words = para.split()
+        if word_count + len(words) <= MAX_WORDS_PER_CHUNK:
+            current_chunk += para + "\n\n"
+            word_count += len(words)
+        else:
+            chunks.append({
+                "text": current_chunk.strip(),
+                "images": images
+            })
+            current_chunk = para + "\n\n"
+            word_count = len(words)
+
+    if current_chunk:
         chunks.append({
             "text": current_chunk.strip(),
-            "images": images  # Associate same images to each chunk
+            "images": images
         })
-        current_chunk = para + "\n\n"
-        word_count = len(words)
 
-# Append last chunk
-if current_chunk:
-    chunks.append({
-        "text": current_chunk.strip(),
-        "images": images
-    })
+    print(f"Generated {len(chunks)} text chunks for {folder_name}")
 
-print(f"Generated {len(chunks)} text chunks.")
+    # Generate embeddings
+    texts = [chunk['text'] for chunk in chunks]
+    embeddings = model.encode(texts, show_progress_bar=False)
 
-# Step 2 – Generate Embeddings
-print("Loading embedding model...")
-model = SentenceTransformer('all-MiniLM-L6-v2')
+    for idx, chunk in enumerate(chunks):
+        chunk['embedding'] = embeddings[idx].tolist()
 
-texts = [chunk['text'] for chunk in chunks]
-print("Generating embeddings...")
-embeddings = model.encode(texts, show_progress_bar=True)
+    # Save structured output
+    final_output = {
+        "url": url,
+        "title": metadata.get('title', 'N/A'),
+        "scraped_at": metadata.get('scraped_at', 'N/A'),
+        "chunks": chunks
+    }
 
-# Attach embeddings back to chunks
-for idx, chunk in enumerate(chunks):
-    chunk['embedding'] = embeddings[idx].tolist()
+    output_file = os.path.join(folder_path, "document_chunks.json")
+    with open(output_file, "w", encoding="utf-8") as out_f:
+        json.dump(final_output, out_f, indent=2)
 
-# Step 3 – Save final chunks
-final_output = {
-    "url": metadata['url'],
-    "title": metadata.get('title', 'N/A'),
-    "scraped_at": metadata.get('scraped_at', 'N/A'),
-    "chunks": chunks
-}
-
-with open(OUTPUT_CHUNKS_FILE, "w", encoding="utf-8") as out_f:
-    json.dump(final_output, out_f, indent=2)
-
-print(f"Saved chunked data with embeddings to {OUTPUT_CHUNKS_FILE}")
+    print(f"Saved {output_file}")
